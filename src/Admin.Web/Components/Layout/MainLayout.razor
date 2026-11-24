@@ -1,0 +1,81 @@
+@inherits LayoutComponentBase
+@inject CampaignApiClient ApiClient
+@inject NavigationManager Navigation
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top shadow-sm">
+    <div class="container-fluid px-4">
+        <a class="navbar-brand d-flex align-items-center gap-2" href="/">
+            <i class="bi bi-broadcast text-primary fs-4"></i>
+            <div>
+                <span class="fw-bold">Distributed Notification</span>
+                <span class="badge bg-primary-subtle text-primary border border-primary-subtle ms-1" style="font-size: 0.7rem;">Đề tài 11</span>
+            </div>
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarContent">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse" id="navbarContent">
+            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                <li class="nav-item">
+                    <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                        <i class="bi bi-speedometer2 me-1"></i> Dashboard
+                    </NavLink>
+                </li>
+                <li class="nav-item">
+                    <NavLink class="nav-link" href="campaigns/create">
+                        <i class="bi bi-plus-circle me-1"></i> Tạo chiến dịch
+                    </NavLink>
+                </li>
+            </ul>
+
+            <div class="d-flex align-items-center gap-2 text-white">
+                @if (health is not null)
+                {
+                    <div class="d-flex align-items-center gap-2 px-3 py-1 bg-secondary bg-opacity-25 rounded-pill border border-secondary" style="font-size: 0.85rem;">
+                        <span class="d-flex align-items-center gap-1">
+                            <span class="@(health.Database == "Connected" ? "text-success" : "text-danger")">●</span>
+                            PostgreSQL: <strong>@health.Database</strong>
+                        </span>
+                        <span class="text-secondary">|</span>
+                        <span class="d-flex align-items-center gap-1">
+                            <span class="@(health.RabbitMQ == "Connected" ? "text-success" : "text-danger")">●</span>
+                            RabbitMQ: <strong>@health.RabbitMQ</strong>
+                        </span>
+                        <button class="btn btn-link btn-sm p-0 text-white-50 ms-1" title="Làm mới trạng thái" @onclick="RefreshHealth">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                }
+                else
+                {
+                    <span class="text-muted" style="font-size: 0.85rem;">Đang kiểm tra kết nối...</span>
+                }
+            </div>
+        </div>
+    </div>
+</nav>
+
+<main class="container-fluid px-4 py-4">
+    @Body
+</main>
+
+<footer class="footer mt-auto py-3 bg-white border-top text-center text-muted" style="font-size: 0.85rem;">
+    <div class="container">
+        <span>Hệ thống gửi thông báo phân tán - Đề tài 11 | C# .NET 10, Minimal API, RabbitMQ, PostgreSQL, Blazor Server &amp; SignalR</span>
+    </div>
+</footer>
+
+@code {
+    private HealthCheckResponse? health;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshHealth();
+    }
+
+    private async Task RefreshHealth()
+    {
+        health = await ApiClient.GetHealthAsync();
+    }
+}

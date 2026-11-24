@@ -63,11 +63,14 @@ services:
       RabbitMQ__UserName: guest
       RabbitMQ__Password: guest
       WORKER_ID: notification-worker-1
+      CampaignApiUrl: "http://campaign-api:8080"
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      campaign-api:
+        condition: service_started
     networks:
       - app-network
     restart: on-failure
@@ -82,11 +85,30 @@ services:
       RabbitMQ__UserName: guest
       RabbitMQ__Password: guest
       WORKER_ID: notification-worker-2
+      CampaignApiUrl: "http://campaign-api:8080"
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      campaign-api:
+        condition: service_started
+    networks:
+      - app-network
+    restart: on-failure
+
+  admin-web:
+    build:
+      context: .
+      dockerfile: src/Admin.Web/Dockerfile
+    ports:
+      - "5001:8080"
+    environment:
+      CampaignApiUrl: "http://campaign-api:8080"
+      SignalRHubUrl: "http://campaign-api:8080/hubs/campaign"
+    depends_on:
+      campaign-api:
+        condition: service_started
     networks:
       - app-network
     restart: on-failure

@@ -1,0 +1,503 @@
+@page "/campaigns/{id:guid}"
+@inject CampaignApiClient ApiClient
+@inject NavigationManager Navigation
+@inject IConfiguration Configuration
+@implements IAsyncDisposable
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex align-items-center gap-3">
+        <a href="/" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> Danh sách
+        </a>
+        <div>
+            <div class="d-flex align-items-center gap-2">
+                <h2 class="fw-bold mb-0">@(campaign?.Title ?? "Chi tiết chiến dịch")</h2>
+                @if (campaign is not null)
+                {
+                    @switch (campaign.Status)
+                    {
+                        case "Completed":
+                            <span class="badge bg-success fs-6"><i class="bi bi-check-circle me-1"></i>Completed</span>
+                            break;
+                        case "Processing":
+                            <span class="badge bg-warning text-dark fs-6"><i class="bi bi-hourglass-split me-1"></i>Processing</span>
+                            break;
+                        case "Draft":
+                        default:
+                            <span class="badge bg-secondary fs-6"><i class="bi bi-file-earmark me-1"></i>Draft</span>
+                            break;
+                    }
+                }
+            </div>
+            <small class="text-muted">
+                ID: <code>@Id</code> | Tạo lúc: @(campaign?.CreatedAt.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss") ?? "-")
+            </small>
+        </div>
+    </div>
+
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge @(isSignalRConnected ? "bg-success-subtle text-success border border-success" : "bg-secondary-subtle text-secondary border") d-flex align-items-center gap-1 py-2 px-3">
+            @if (isSignalRConnected)
+            {
+                <span class="pulse-live"></span>
+                <span>SignalR Trực tiếp</span>
+            }
+            else
+            {
+                <i class="bi bi-wifi-off"></i>
+                <span>Mất kết nối Live</span>
+            }
+        </span>
+
+        @if (campaign is not null)
+        {
+            @if (campaign.Status == "Draft")
+            {
+                <button class="btn btn-success shadow-sm" @onclick="StartCampaign" disabled="@isActionRunning">
+                    <i class="bi bi-play-fill me-1"></i> Kích hoạt gửi (Start)
+                </button>
+            }
+            @if (campaign.FailedCount > 0)
+            {
+                <button class="btn btn-warning text-dark shadow-sm" @onclick="RetryCampaign" disabled="@isActionRunning">
+                    <i class="bi bi-arrow-repeat me-1"></i> Chạy lại job lỗi (@campaign.FailedCount)
+                </button>
+            }
+        }
+        <button class="btn btn-outline-secondary" @onclick="RefreshAsync" title="Làm mới">
+            <i class="bi bi-arrow-clockwise"></i>
+        </button>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(alertMessage))
+{
+    <div class="alert @alertClass alert-dismissible fade show mb-4" role="alert">
+        <i class="bi @alertIcon me-2"></i>@alertMessage
+        <button type="button" class="btn-close" @onclick="() => alertMessage = null"></button>
+    </div>
+}
+
+@if (isLoading)
+{
+    <div class="text-center py-5">
+        <div class="spinner-border text-primary" role="status"></div>
+        <p class="text-muted mt-2">Đang tải thông tin chiến dịch...</p>
+    </div>
+}
+else if (campaign is null)
+{
+    <div class="card p-5 text-center">
+        <i class="bi bi-exclamation-circle text-danger display-3"></i>
+        <h3 class="mt-3">Không tìm thấy chiến dịch</h3>
+        <p class="text-muted">Chiến dịch với ID này không tồn tại hoặc đã bị xóa.</p>
+        <div class="mt-2">
+            <a href="/" class="btn btn-primary">Quay lại Dashboard</a>
+        </div>
+    </div>
+}
+else
+{
+    var total = campaign.PendingCount + campaign.SentCount + campaign.FailedCount;
+    var processed = campaign.SentCount + campaign.FailedCount;
+    var progressPercent = total > 0 ? (double)processed / total * 100 : 0;
+    var sentPercent = total > 0 ? (double)campaign.SentCount / total * 100 : 0;
+    var failedPercent = total > 0 ? (double)campaign.FailedCount / total * 100 : 0;
+
+    <!-- REAL-TIME PROGRESS CARD -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-body p-4">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                    <h5 class="fw-bold mb-0">Tiến Độ Xử Lý Thông Báo</h5>
+                    <small class="text-muted">Cập nhật tự động thời gian thực qua SignalR khi Worker xử lý</small>
+                </div>
+                <div class="text-end">
+                    <span class="fs-4 fw-bold @(campaign.Status == "Completed" ? "text-success" : "text-primary")">
+                        @progressPercent.ToString("F1")%
+                    </span>
+                    <small class="text-muted d-block">(@processed / @total hoàn tất)</small>
+                </div>
+            </div>
+
+            <div class="progress mb-3" style="height: 18px; border-radius: 9px;">
+                <div class="progress-bar bg-success progress-bar-striped @(campaign.Status == "Processing" ? "progress-bar-animated" : "")"
+                     role="progressbar"
+                     style="width: @sentPercent%"
+                     title="Thành công: @campaign.SentCount (@sentPercent.ToString("F1")%)">
+                    @if (sentPercent > 10)
+                    {
+                        <span>@campaign.SentCount Đã gửi</span>
+                    }
+                </div>
+                <div class="progress-bar bg-danger"
+                     role="progressbar"
+                     style="width: @failedPercent%"
+                     title="Thất bại: @campaign.FailedCount (@failedPercent.ToString("F1")%)">
+                    @if (failedPercent > 10)
+                    {
+                        <span>@campaign.FailedCount Lỗi</span>
+                    }
+                </div>
+            </div>
+
+            <!-- Detailed Counter Badges -->
+            <div class="row g-3 text-center">
+                <div class="col-md-3">
+                    <div class="p-2 border rounded bg-light">
+                        <small class="text-muted d-block text-uppercase fw-semibold" style="font-size: 0.75rem;">Tổng Người Nhận</small>
+                        <span class="fs-4 fw-bold text-dark">@total</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="p-2 border rounded bg-success bg-opacity-10 border-success">
+                        <small class="text-success d-block text-uppercase fw-semibold" style="font-size: 0.75rem;">Đã Gửi Thành Công</small>
+                        <span class="fs-4 fw-bold text-success">@campaign.SentCount</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="p-2 border rounded bg-warning bg-opacity-10 border-warning">
+                        <small class="text-warning-emphasis d-block text-uppercase fw-semibold" style="font-size: 0.75rem;">Đang Chờ Xử Lý</small>
+                        <span class="fs-4 fw-bold text-warning-emphasis">@campaign.PendingCount</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="p-2 border rounded bg-danger bg-opacity-10 border-danger">
+                        <small class="text-danger d-block text-uppercase fw-semibold" style="font-size: 0.75rem;">Thất Bại (Lỗi)</small>
+                        <span class="fs-4 fw-bold text-danger">@campaign.FailedCount</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- DELIVERIES TABLE CARD -->
+    <div class="card shadow-sm mb-5">
+        <div class="card-header bg-white py-3">
+            <div class="row align-items-center g-2">
+                <div class="col-md-4">
+                    <h5 class="card-title mb-0 fw-bold">
+                        <i class="bi bi-send text-primary me-2"></i>Kết Quả Gửi Từng Người Nhận
+                    </h5>
+                </div>
+                <div class="col-md-5">
+                    <ul class="nav nav-pills nav-fill small">
+                        <li class="nav-item">
+                            <button class="nav-link @(statusFilter == "All" ? "active py-1" : "py-1")" @onclick='() => SetStatusFilter("All")'>
+                                Tất cả (@deliveries.Count)
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link text-success @(statusFilter == "Sent" ? "active bg-success text-white py-1" : "py-1")" @onclick='() => SetStatusFilter("Sent")'>
+                                Sent (@deliveries.Count(d => d.Status == "Sent"))
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link text-danger @(statusFilter == "Failed" ? "active bg-danger text-white py-1" : "py-1")" @onclick='() => SetStatusFilter("Failed")'>
+                                Failed (@deliveries.Count(d => d.Status == "Failed"))
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link text-warning-emphasis @(statusFilter == "Pending" ? "active bg-warning text-dark py-1" : "py-1")" @onclick='() => SetStatusFilter("Pending")'>
+                                Pending (@deliveries.Count(d => d.Status == "Pending"))
+                            </button>
+                        </li>
+                    </ul>
+                </div>
+                <div class="col-md-3">
+                    <div class="input-group input-group-sm">
+                        <span class="input-group-text bg-light border-end-0"><i class="bi bi-search text-muted"></i></span>
+                        <input type="text" class="form-control bg-light border-start-0" placeholder="Tìm người nhận..." @bind="searchFilter" @bind:event="oninput" />
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            @if (filteredDeliveries.Count == 0)
+            {
+                <div class="text-center py-5 text-muted">
+                    <i class="bi bi-filter fs-2 d-block mb-1"></i>
+                    Không tìm thấy bản ghi gửi nào phù hợp với bộ lọc.
+                </div>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0" style="font-size: 0.9rem;">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width: 4%;">#</th>
+                                <th style="width: 20%;">Người Nhận</th>
+                                <th style="width: 22%;">Địa Chỉ Nhận</th>
+                                <th style="width: 12%;">Trạng Thái</th>
+                                <th style="width: 14%;">Worker Xử Lý</th>
+                                <th style="width: 8%;" class="text-center">Retry</th>
+                                <th style="width: 20%;">Chi Tiết Lỗi / Correlation ID</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (int i = 0; i < filteredDeliveries.Count; i++)
+                            {
+                                var d = filteredDeliveries[i];
+                                <tr>
+                                    <td class="text-muted">@(i + 1)</td>
+                                    <td class="fw-semibold">@d.RecipientName</td>
+                                    <td><code>@d.Destination</code></td>
+                                    <td>
+                                        @switch (d.Status)
+                                        {
+                                            case "Sent":
+                                                <span class="badge bg-success-subtle text-success border border-success-subtle">
+                                                    <i class="bi bi-check-lg me-1"></i>Sent
+                                                </span>
+                                                break;
+                                            case "Failed":
+                                                <span class="badge bg-danger-subtle text-danger border border-danger-subtle">
+                                                    <i class="bi bi-x-lg me-1"></i>Failed
+                                                </span>
+                                                break;
+                                            case "Pending":
+                                            default:
+                                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">
+                                                    <i class="bi bi-hourglass me-1"></i>Pending
+                                                </span>
+                                                break;
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (string.IsNullOrEmpty(d.WorkerId))
+                                        {
+                                            <span class="badge bg-light text-muted border">-</span>
+                                        }
+                                        else if (d.WorkerId.Contains("worker-1", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            <span class="badge badge-worker-1">
+                                                <i class="bi bi-cpu me-1"></i>@d.WorkerId
+                                            </span>
+                                        }
+                                        else if (d.WorkerId.Contains("worker-2", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            <span class="badge badge-worker-2">
+                                                <i class="bi bi-cpu me-1"></i>@d.WorkerId
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge bg-secondary">
+                                                <i class="bi bi-cpu me-1"></i>@d.WorkerId
+                                            </span>
+                                        }
+                                    </td>
+                                    <td class="text-center">
+                                        @if (d.RetryCount > 0)
+                                        {
+                                            <span class="badge bg-warning text-dark">@d.RetryCount</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">0</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (!string.IsNullOrEmpty(d.ErrorMessage))
+                                        {
+                                            <div class="text-danger small" title="@d.ErrorMessage">
+                                                <i class="bi bi-exclamation-triangle-fill me-1"></i>@d.ErrorMessage
+                                            </div>
+                                        }
+                                        <div class="text-muted" style="font-size: 0.75rem;">
+                                            CID: <code>@d.CorrelationId[..Math.Min(12, d.CorrelationId.Length)]...</code>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private CampaignDto? campaign;
+    private List<DeliveryDto> deliveries = new();
+    private bool isLoading = true;
+    private bool isActionRunning = false;
+    private string statusFilter = "All";
+    private string searchFilter = string.Empty;
+
+    private string? alertMessage;
+    private string alertClass = "alert-info";
+    private string alertIcon = "bi-info-circle";
+
+    private HubConnection? hubConnection;
+    private bool isSignalRConnected => hubConnection?.State == HubConnectionState.Connected;
+
+    private List<DeliveryDto> filteredDeliveries
+    {
+        get
+        {
+            var result = deliveries.AsEnumerable();
+
+            if (statusFilter != "All")
+            {
+                result = result.Where(d => d.Status.Equals(statusFilter, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (!string.IsNullOrWhiteSpace(searchFilter))
+            {
+                result = result.Where(d => d.RecipientName.Contains(searchFilter, StringComparison.OrdinalIgnoreCase)
+                                         || d.Destination.Contains(searchFilter, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return result.ToList();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadCampaignDataAsync();
+        await SetupSignalRAsync();
+    }
+
+    private async Task LoadCampaignDataAsync()
+    {
+        isLoading = true;
+        try
+        {
+            campaign = await ApiClient.GetCampaignAsync(Id);
+            if (campaign is not null)
+            {
+                deliveries = await ApiClient.GetDeliveriesAsync(Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowAlert($"Không thể tải dữ liệu: {ex.Message}", "alert-danger", "bi-exclamation-triangle");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        await LoadCampaignDataAsync();
+        ShowAlert("Đã làm mới dữ liệu thành công.", "alert-info", "bi-info-circle");
+    }
+
+    private async Task SetupSignalRAsync()
+    {
+        try
+        {
+            var hubUrl = Configuration["SignalRHubUrl"]
+                ?? Environment.GetEnvironmentVariable("SIGNALR_HUB_URL")
+                ?? "http://localhost:5000/hubs/campaign";
+
+            hubConnection = new HubConnectionBuilder()
+                .WithUrl(hubUrl)
+                .WithAutomaticReconnect()
+                .Build();
+
+            hubConnection.On<CampaignDto>("CampaignProgressUpdated", async (updatedCampaign) =>
+            {
+                if (updatedCampaign.Id == Id)
+                {
+                    campaign = updatedCampaign;
+                    // Auto reload deliveries list
+                    try
+                    {
+                        deliveries = await ApiClient.GetDeliveriesAsync(Id);
+                    }
+                    catch { }
+
+                    await InvokeAsync(StateHasChanged);
+                }
+            });
+
+            await hubConnection.StartAsync();
+            await hubConnection.SendAsync("JoinCampaignGroup", Id.ToString());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CampaignDetail] SignalR notice: {ex.Message}");
+        }
+    }
+
+    private void SetStatusFilter(string filter)
+    {
+        statusFilter = filter;
+    }
+
+    private async Task StartCampaign()
+    {
+        isActionRunning = true;
+        try
+        {
+            var ok = await ApiClient.StartCampaignAsync(Id);
+            if (ok)
+            {
+                ShowAlert("Đã kích hoạt chiến dịch! Các Worker đang tiếp nhận và gửi thông báo qua RabbitMQ.", "alert-success", "bi-play-circle");
+                await LoadCampaignDataAsync();
+            }
+            else
+            {
+                ShowAlert("Kích hoạt thất bại. Chiến dịch có thể đã chạy hoặc không có người nhận.", "alert-danger", "bi-x-circle");
+            }
+        }
+        finally
+        {
+            isActionRunning = false;
+        }
+    }
+
+    private async Task RetryCampaign()
+    {
+        isActionRunning = true;
+        try
+        {
+            var ok = await ApiClient.RetryCampaignAsync(Id);
+            if (ok)
+            {
+                ShowAlert("Đã gửi yêu cầu chạy lại các job lỗi qua RabbitMQ.", "alert-warning", "bi-arrow-repeat");
+                await LoadCampaignDataAsync();
+            }
+            else
+            {
+                ShowAlert("Không thể chạy lại các job lỗi.", "alert-danger", "bi-x-circle");
+            }
+        }
+        finally
+        {
+            isActionRunning = false;
+        }
+    }
+
+    private void ShowAlert(string message, string cssClass, string icon)
+    {
+        alertMessage = message;
+        alertClass = cssClass;
+        alertIcon = icon;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            try
+            {
+                if (hubConnection.State == HubConnectionState.Connected)
+                {
+                    await hubConnection.SendAsync("LeaveCampaignGroup", Id.ToString());
+                }
+            }
+            catch { }
+
+            await hubConnection.DisposeAsync();
+        }
+    }
+}

@@ -1,0 +1,455 @@
+@page "/campaigns/create"
+@inject CampaignApiClient ApiClient
+@inject NavigationManager Navigation
+
+<div class="row justify-content-center">
+    <div class="col-12 col-lg-10">
+        <div class="d-flex align-items-center mb-4">
+            <a href="/" class="btn btn-outline-secondary btn-sm me-3">
+                <i class="bi bi-arrow-left"></i> Quay lại
+            </a>
+            <div>
+                <h2 class="fw-bold mb-0">Tạo Chiến Dịch Thông Báo Mới</h2>
+                <small class="text-muted">Định cấu hình thông điệp và danh sách người nhận gửi hàng loạt</small>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(errorMessage))
+        {
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                <i class="bi bi-exclamation-triangle me-2"></i>@errorMessage
+                <button type="button" class="btn-close" @onclick="() => errorMessage = null"></button>
+            </div>
+        }
+
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-white py-3">
+                <h5 class="card-title mb-0 fw-bold">
+                    <i class="bi bi-info-circle text-primary me-2"></i>Thông Tin Chiến Dịch
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-8">
+                        <label class="form-label fw-semibold">Tiêu Đề Chiến Dịch <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" placeholder="Ví dụ: Thông báo bảo trì hệ thống định kỳ..." @bind="title" />
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Kênh Gửi Thông Báo <span class="text-danger">*</span></label>
+                        <select class="form-select" @bind="channel" @bind:after="OnChannelChanged">
+                            <option value="Email">📧 Email</option>
+                            <option value="SMS">💬 SMS</option>
+                            <option value="Push">🔔 Push Notification</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold">Nội Dung Thông Báo <span class="text-danger">*</span></label>
+                        <textarea class="form-control" rows="3" placeholder="Nhập nội dung thông điệp gửi tới người nhận..." @bind="content"></textarea>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0 fw-bold">
+                    <i class="bi bi-people text-primary me-2"></i>Danh Sách Người Nhận
+                </h5>
+                <span class="badge bg-primary fs-6">
+                    Tổng người nhận: @TotalRecipientCount
+                </span>
+            </div>
+            <div class="card-body">
+                <!-- Nav Tabs for 3 Modes -->
+                <ul class="nav nav-pills nav-fill mb-4 p-1 bg-light rounded" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link @(activeTab == "sample" ? "active" : "") fw-semibold" @onclick='() => SetTab("sample")'>
+                            <i class="bi bi-magic me-1"></i> (a) Sinh Mẫu Dữ Liệu Test
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link @(activeTab == "manual" ? "active" : "") fw-semibold" @onclick='() => SetTab("manual")'>
+                            <i class="bi bi-pencil-square me-1"></i> (b) Nhập Thủ Công Mới
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link @(activeTab == "existing" ? "active" : "") fw-semibold" @onclick='() => SetTab("existing")'>
+                            <i class="bi bi-database-check me-1"></i> (c) Chọn Người Nhận Có Sẵn (@existingRecipients.Count)
+                        </button>
+                    </li>
+                </ul>
+
+                <!-- TAB A: Sinh mẫu dữ liệu -->
+                @if (activeTab == "sample")
+                {
+                    <div class="border rounded p-3 bg-light mb-3">
+                        <div class="row align-items-center g-3">
+                            <div class="col-auto">
+                                <label class="form-label mb-0 fw-semibold">Số lượng người nhận mẫu (10 - 50):</label>
+                            </div>
+                            <div class="col-auto" style="width: 140px;">
+                                <input type="number" class="form-control" min="10" max="50" @bind="sampleCount" />
+                            </div>
+                            <div class="col-auto">
+                                <button class="btn btn-outline-primary" @onclick="GenerateSampleRecipients">
+                                    <i class="bi bi-arrow-repeat me-1"></i> Sinh lại danh sách
+                                </button>
+                            </div>
+                            <div class="col-12">
+                                <small class="text-muted">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    Danh sách mẫu gồm ~10% địa chỉ chứa từ khóa <code>fail</code> và một số địa chỉ ngẫu nhiên sẽ thất bại ở lần gửi đầu để dễ dàng kiểm thử tính năng <strong>Fault Tolerance, DLQ và Retry</strong>.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+
+                    @if (sampleRecipients.Count > 0)
+                    {
+                        <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+                            <table class="table table-sm table-hover align-middle mb-0">
+                                <thead class="table-light sticky-top">
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Họ &amp; Tên</th>
+                                        <th>Địa Chỉ Nhận (@channel)</th>
+                                        <th>Kiểu Dữ Liệu</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @for (int i = 0; i < sampleRecipients.Count; i++)
+                                    {
+                                        var r = sampleRecipients[i];
+                                        var isFail = r.Destination.Contains("fail", StringComparison.OrdinalIgnoreCase);
+                                        <tr>
+                                            <td class="text-muted">@(i + 1)</td>
+                                            <td class="fw-medium">@r.Name</td>
+                                            <td><code>@r.Destination</code></td>
+                                            <td>
+                                                @if (isFail)
+                                                {
+                                                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle">Mô phỏng Lỗi (Test Retry)</span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="badge bg-success-subtle text-success border border-success-subtle">Hợp lệ</span>
+                                                }
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                }
+
+                <!-- TAB B: Nhập danh sách mới -->
+                @if (activeTab == "manual")
+                {
+                    <div class="mb-3 d-flex justify-content-between align-items-center">
+                        <span class="text-muted small">Nhập thông tin người nhận muốn thêm vào chiến dịch:</span>
+                        <button class="btn btn-sm btn-outline-primary" @onclick="AddManualRow">
+                            <i class="bi bi-plus-lg me-1"></i> Thêm người nhận
+                        </button>
+                    </div>
+
+                    @for (int i = 0; i < manualRecipients.Count; i++)
+                    {
+                        var index = i;
+                        var row = manualRecipients[index];
+                        <div class="row g-2 mb-2 align-items-center">
+                            <div class="col-md-5">
+                                <input type="text" class="form-control form-control-sm" placeholder="Họ và tên người nhận" @bind="row.Name" />
+                            </div>
+                            <div class="col-md-6">
+                                <input type="text" class="form-control form-control-sm" placeholder="@(channel == "Email" ? "email@example.com" : channel == "SMS" ? "+84901234567" : "device_token_xyz")" @bind="row.Destination" />
+                            </div>
+                            <div class="col-md-1 text-end">
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveManualRow(index)" disabled="@(manualRecipients.Count <= 1)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    }
+                }
+
+                <!-- TAB C: Chọn người nhận có sẵn -->
+                @if (activeTab == "existing")
+                {
+                    @if (isLoadingExisting)
+                    {
+                        <div class="text-center py-4">
+                            <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                            <span class="ms-2 text-muted">Đang tải danh sách người nhận...</span>
+                        </div>
+                    }
+                    else if (existingRecipients.Count == 0)
+                    {
+                        <div class="text-center py-4 text-muted">
+                            <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+                            Chưa có người nhận nào được lưu trong hệ thống. Hãy dùng tab (a) hoặc (b) để thêm mới.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="selectAll" @onchange="ToggleSelectAllExisting" checked="@(selectedExistingIds.Count == existingRecipients.Count && existingRecipients.Count > 0)" />
+                                <label class="form-check-label fw-semibold" for="selectAll">
+                                    Chọn tất cả (@existingRecipients.Count người nhận)
+                                </label>
+                            </div>
+                            <span class="text-muted small">Đã chọn: <strong>@selectedExistingIds.Count</strong></span>
+                        </div>
+
+                        <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+                            <table class="table table-sm table-hover align-middle mb-0">
+                                <thead class="table-light sticky-top">
+                                    <tr>
+                                        <th style="width: 40px;"></th>
+                                        <th>Họ &amp; Tên</th>
+                                        <th>Địa Chỉ Lưu Trữ</th>
+                                        <th>Ngày Lưu</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var r in existingRecipients)
+                                    {
+                                        var isChecked = selectedExistingIds.Contains(r.Id);
+                                        <tr @onclick="() => ToggleExisting(r.Id)" style="cursor: pointer;">
+                                            <td>
+                                                <input class="form-check-input" type="checkbox" checked="@isChecked" @onchange="() => ToggleExisting(r.Id)" />
+                                            </td>
+                                            <td class="fw-medium">@r.Name</td>
+                                            <td><code>@r.Destination</code></td>
+                                            <td class="text-muted small">@r.CreatedAt.ToLocalTime().ToString("dd/MM/yyyy")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-end gap-2 mb-5">
+            <a href="/" class="btn btn-outline-secondary px-4">Hủy</a>
+            <button class="btn btn-primary px-4 shadow-sm" @onclick="SubmitCampaignAsync" disabled="@isSubmitting">
+                @if (isSubmitting)
+                {
+                    <span class="spinner-border spinner-border-sm me-2"></span>
+                    <span>Đang tạo chiến dịch...</span>
+                }
+                else
+                {
+                    <i class="bi bi-check-lg me-1"></i>
+                    <span>Tạo Chiến Dịch (@TotalRecipientCount Người Nhận)</span>
+                }
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string title = string.Empty;
+    private string content = string.Empty;
+    private string channel = "Email";
+    private string activeTab = "sample";
+    private int sampleCount = 25;
+    private bool isSubmitting = false;
+    private bool isLoadingExisting = false;
+    private string? errorMessage;
+
+    private List<RecipientInputModel> sampleRecipients = new();
+    private List<RecipientInputModel> manualRecipients = new() { new() };
+    private List<RecipientDto> existingRecipients = new();
+    private HashSet<Guid> selectedExistingIds = new();
+
+    private class RecipientInputModel
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Destination { get; set; } = string.Empty;
+    }
+
+    private int TotalRecipientCount
+    {
+        get
+        {
+            return activeTab switch
+            {
+                "sample" => sampleRecipients.Count,
+                "manual" => manualRecipients.Count(r => !string.IsNullOrWhiteSpace(r.Name) && !string.IsNullOrWhiteSpace(r.Destination)),
+                "existing" => selectedExistingIds.Count,
+                _ => 0
+            };
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        title = $"Chiến dịch {channel} Hàng loạt #{DateTime.Now:MMdd-HHmm}";
+        content = "Xin chào! Đây là thông báo cập nhật quan trọng từ hệ thống gửi thông báo phân tán.";
+        GenerateSampleRecipients();
+        await LoadExistingRecipientsAsync();
+    }
+
+    private void OnChannelChanged()
+    {
+        GenerateSampleRecipients();
+    }
+
+    private void SetTab(string tab)
+    {
+        activeTab = tab;
+    }
+
+    private void AddManualRow()
+    {
+        manualRecipients.Add(new RecipientInputModel());
+    }
+
+    private void RemoveManualRow(int index)
+    {
+        if (manualRecipients.Count > 1)
+        {
+            manualRecipients.RemoveAt(index);
+        }
+    }
+
+    private async Task LoadExistingRecipientsAsync()
+    {
+        isLoadingExisting = true;
+        try
+        {
+            existingRecipients = await ApiClient.GetRecipientsAsync();
+        }
+        finally
+        {
+            isLoadingExisting = false;
+        }
+    }
+
+    private void ToggleExisting(Guid id)
+    {
+        if (selectedExistingIds.Contains(id))
+            selectedExistingIds.Remove(id);
+        else
+            selectedExistingIds.Add(id);
+    }
+
+    private void ToggleSelectAllExisting(ChangeEventArgs e)
+    {
+        if ((bool)(e.Value ?? false))
+        {
+            selectedExistingIds = new HashSet<Guid>(existingRecipients.Select(r => r.Id));
+        }
+        else
+        {
+            selectedExistingIds.Clear();
+        }
+    }
+
+    private void GenerateSampleRecipients()
+    {
+        sampleRecipients.Clear();
+        var firstNames = new[] { "Nguyễn", "Trần", "Lê", "Phạm", "Hoàng", "Huỳnh", "Phan", "Vũ", "Võ", "Đặng", "Bùi", "Đỗ", "Hồ", "Ngô", "Dương" };
+        var midNames = new[] { "Văn", "Thị", "Hữu", "Đức", "Minh", "Thanh", "Quốc", "Gia", "Bảo", "Anh" };
+        var lastNames = new[] { "An", "Bình", "Cường", "Dũng", "Em", "Hùng", "Hải", "Khánh", "Long", "Nam", "Phong", "Quân", "Sơn", "Tuấn", "Vy" };
+
+        for (int i = 1; i <= sampleCount; i++)
+        {
+            var fullName = $"{firstNames[i % firstNames.Length]} {midNames[i % midNames.Length]} {lastNames[i % lastNames.Length]} #{i}";
+            string destination;
+
+            if (i % 8 == 0)
+            {
+                destination = channel switch
+                {
+                    "SMS" => $"+8490fail{i:D4}",
+                    "Push" => $"device_token_fail_{i:D4}",
+                    _ => $"fail_user_{i:D2}@notification-demo.com"
+                };
+            }
+            else
+            {
+                destination = channel switch
+                {
+                    "SMS" => $"+8490{Random.Shared.Next(1000000, 9999999)}",
+                    "Push" => $"fcm_token_{Guid.NewGuid().ToString("N")[..12]}",
+                    _ => $"user_{i:D2}@notification-demo.com"
+                };
+            }
+
+            sampleRecipients.Add(new RecipientInputModel { Name = fullName, Destination = destination });
+        }
+    }
+
+    private async Task SubmitCampaignAsync()
+    {
+        errorMessage = null;
+
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            errorMessage = "Vui lòng nhập Tiêu đề chiến dịch.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            errorMessage = "Vui lòng nhập Nội dung thông báo.";
+            return;
+        }
+
+        if (TotalRecipientCount == 0)
+        {
+            errorMessage = "Vui lòng chọn hoặc nhập ít nhất 1 người nhận.";
+            return;
+        }
+
+        isSubmitting = true;
+        try
+        {
+            List<RecipientInput>? newRecipients = null;
+            List<Guid>? existingIds = null;
+
+            if (activeTab == "sample")
+            {
+                newRecipients = sampleRecipients
+                    .Select(r => new RecipientInput(r.Name, r.Destination))
+                    .ToList();
+            }
+            else if (activeTab == "manual")
+            {
+                newRecipients = manualRecipients
+                    .Where(r => !string.IsNullOrWhiteSpace(r.Name) && !string.IsNullOrWhiteSpace(r.Destination))
+                    .Select(r => new RecipientInput(r.Name, r.Destination))
+                    .ToList();
+            }
+            else if (activeTab == "existing")
+            {
+                existingIds = selectedExistingIds.ToList();
+            }
+
+            var request = new CreateCampaignRequest(title, content, channel, newRecipients, existingIds);
+            var result = await ApiClient.CreateCampaignAsync(request);
+
+            if (result is not null)
+            {
+                Navigation.NavigateTo($"/campaigns/{result.Id}");
+            }
+            else
+            {
+                errorMessage = "Không thể tạo chiến dịch. Vui lòng kiểm tra lại dịch vụ API.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Đã xảy ra lỗi khi tạo chiến dịch: {ex.Message}";
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+}
