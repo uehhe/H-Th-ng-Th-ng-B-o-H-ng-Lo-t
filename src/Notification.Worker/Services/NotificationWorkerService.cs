@@ -13,19 +13,26 @@ public class NotificationWorkerService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IConfiguration _config;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<NotificationWorkerService> _logger;
     private readonly string _workerId;
+    private readonly string _campaignApiUrl;
 
     public NotificationWorkerService(
         IServiceScopeFactory scopeFactory,
         IConfiguration config,
+        IHttpClientFactory httpClientFactory,
         ILogger<NotificationWorkerService> logger)
     {
         _scopeFactory = scopeFactory;
         _config = config;
+        _httpClientFactory = httpClientFactory;
         _logger = logger;
         _workerId = Environment.GetEnvironmentVariable("WORKER_ID")
             ?? Environment.MachineName;
+        _campaignApiUrl = _config["CampaignApiUrl"]
+            ?? Environment.GetEnvironmentVariable("CAMPAIGN_API_URL")
+            ?? "http://campaign-api:8080";
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -205,6 +212,9 @@ public class NotificationWorkerService : BackgroundService
 
                 // Ack ONLY AFTER DB update (Fault tolerance guarantee)
                 await channel.BasicAckAsync(ea.DeliveryTag, multiple: false);
+
+                // Trigger real-time progress update to SignalR via API
+                await NotifyApiProgressAsync(message.CampaignId);
             }
             else
             {
@@ -220,6 +230,9 @@ public class NotificationWorkerService : BackgroundService
 
                 // Ack ONLY AFTER DB update (Fault tolerance guarantee)
                 await channel.BasicAckAsync(ea.DeliveryTag, multiple: false);
+
+                // Trigger real-time progress update to SignalR via API
+                await NotifyApiProgressAsync(message.CampaignId);
             }
 
             // ── Check if campaign has finished all jobs ──
@@ -237,6 +250,9 @@ public class NotificationWorkerService : BackgroundService
                         await db.SaveChangesAsync();
                         _logger.LogInformation("[{WorkerId}] Campaign {CampaignId} marked as ✅ Completed.",
                             _workerId, message.CampaignId);
+
+                        // Broadcast completion state
+                        await NotifyApiProgressAsync(message.CampaignId);
                     }
                 }
             }
@@ -259,6 +275,21 @@ public class NotificationWorkerService : BackgroundService
             {
                 _logger.LogError(nackEx, "[{WorkerId}] Failed to Nack message.", _workerId);
             }
+        }
+    }
+
+    private async Task NotifyApiProgressAsync(Guid campaignId)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(3);
+            var url = $"{_campaignApiUrl.TrimEnd('/')}/internal/campaigns/{campaignId}/notify-progress";
+            await client.PostAsync(url, null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[{WorkerId}] NotifyApiProgress notice: {Message}", _workerId, ex.Message);
         }
     }
 }

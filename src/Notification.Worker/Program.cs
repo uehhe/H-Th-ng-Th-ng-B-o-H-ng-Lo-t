@@ -11,6 +11,9 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
 
+// ── HTTP Client for Progress Notification ──
+builder.Services.AddHttpClient();
+
 // ── Worker Service ──
 builder.Services.AddHostedService<NotificationWorkerService>();
 

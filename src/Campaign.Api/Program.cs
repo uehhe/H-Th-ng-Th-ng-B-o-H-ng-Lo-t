@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Campaign.Api.Hubs;
 using Campaign.Api.Services;
 using Shared.Data;
 using Shared.DTOs;
@@ -17,7 +19,23 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddSingleton<RabbitMqPublisher>();
 
+// ── CORS & SignalR ─────────────────────────────────────────
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.SetIsOriginAllowed(_ => true)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+});
+
+builder.Services.AddSignalR();
+
 var app = builder.Build();
+
+app.UseCors();
 
 // ── Database init with retry ──────────────────────────────
 using (var scope = app.Services.CreateScope())
@@ -61,10 +79,13 @@ catch (Exception ex)
     app.Logger.LogWarning("RabbitMQ initial connection deferred: {Message}", ex.Message);
 }
 
+// ── SignalR Hub Endpoint ──────────────────────────────────
+app.MapHub<CampaignHub>("/hubs/campaign");
+
 // ── API Endpoints ─────────────────────────────────────────
 
 // 1. POST /campaigns - Create a new campaign with recipients
-app.MapPost("/campaigns", async (CreateCampaignRequest request, AppDbContext db) =>
+app.MapPost("/campaigns", async (CreateCampaignRequest request, AppDbContext db, IHubContext<CampaignHub> hubContext) =>
 {
     var campaign = new CampaignEntity
     {
@@ -118,6 +139,14 @@ app.MapPost("/campaigns", async (CreateCampaignRequest request, AppDbContext db)
     }
 
     await db.SaveChangesAsync();
+
+    var createdDto = new CampaignDto(
+        campaign.Id, campaign.Title, campaign.Content, campaign.Channel,
+        campaign.Status.ToString(), campaign.CreatedAt,
+        recipientIds.Count, 0, 0
+    );
+    await hubContext.Clients.All.SendAsync("GlobalProgressUpdated", createdDto);
+
     return Results.Created($"/campaigns/{campaign.Id}", new { campaign.Id, campaign.Title, RecipientsCount = recipientIds.Count });
 });
 
@@ -156,7 +185,7 @@ app.MapGet("/campaigns/{id:guid}", async (Guid id, AppDbContext db) =>
 });
 
 // 4. POST /campaigns/{id}/start - Start campaign, publish pending jobs to RabbitMQ
-app.MapPost("/campaigns/{id:guid}/start", async (Guid id, AppDbContext db, RabbitMqPublisher rabbitPublisher) =>
+app.MapPost("/campaigns/{id:guid}/start", async (Guid id, AppDbContext db, RabbitMqPublisher rabbitPublisher, IHubContext<CampaignHub> hubContext) =>
 {
     var campaign = await db.Campaigns.FindAsync(id);
     if (campaign is null) return Results.NotFound();
@@ -174,6 +203,24 @@ app.MapPost("/campaigns/{id:guid}/start", async (Guid id, AppDbContext db, Rabbi
         return Results.BadRequest(new { Error = "No pending deliveries to process." });
 
     await db.SaveChangesAsync();
+
+    // Broadcast updated state to SignalR
+    var stats = await db.Campaigns
+        .Where(c => c.Id == id)
+        .Select(c => new CampaignDto(
+            c.Id, c.Title, c.Content, c.Channel,
+            c.Status.ToString(), c.CreatedAt,
+            c.Deliveries.Count(d => d.Status == "Pending"),
+            c.Deliveries.Count(d => d.Status == "Sent"),
+            c.Deliveries.Count(d => d.Status == "Failed")
+        ))
+        .FirstOrDefaultAsync();
+
+    if (stats is not null)
+    {
+        await hubContext.Clients.Group(id.ToString()).SendAsync("CampaignProgressUpdated", stats);
+        await hubContext.Clients.All.SendAsync("GlobalProgressUpdated", stats);
+    }
 
     // Build messages from loaded data (before scope disposal)
     var messages = pendingDeliveries.Select(d => new NotificationJobMessage(
@@ -220,7 +267,7 @@ app.MapGet("/campaigns/{id:guid}/deliveries", async (Guid id, AppDbContext db) =
 });
 
 // 6. POST /campaigns/{id}/retry - Retry failed deliveries
-app.MapPost("/campaigns/{id:guid}/retry", async (Guid id, AppDbContext db, RabbitMqPublisher rabbitPublisher) =>
+app.MapPost("/campaigns/{id:guid}/retry", async (Guid id, AppDbContext db, RabbitMqPublisher rabbitPublisher, IHubContext<CampaignHub> hubContext) =>
 {
     var campaign = await db.Campaigns.FindAsync(id);
     if (campaign is null) return Results.NotFound();
@@ -244,6 +291,23 @@ app.MapPost("/campaigns/{id:guid}/retry", async (Guid id, AppDbContext db, Rabbi
     campaign.Status = CampaignStatus.Processing;
     await db.SaveChangesAsync();
 
+    var stats = await db.Campaigns
+        .Where(c => c.Id == id)
+        .Select(c => new CampaignDto(
+            c.Id, c.Title, c.Content, c.Channel,
+            c.Status.ToString(), c.CreatedAt,
+            c.Deliveries.Count(d => d.Status == "Pending"),
+            c.Deliveries.Count(d => d.Status == "Sent"),
+            c.Deliveries.Count(d => d.Status == "Failed")
+        ))
+        .FirstOrDefaultAsync();
+
+    if (stats is not null)
+    {
+        await hubContext.Clients.Group(id.ToString()).SendAsync("CampaignProgressUpdated", stats);
+        await hubContext.Clients.All.SendAsync("GlobalProgressUpdated", stats);
+    }
+
     var messages = failedDeliveries.Select(d => new NotificationJobMessage(
         d.Id, campaign.Id, d.RecipientId,
         d.Recipient.Destination, campaign.Channel,
@@ -262,7 +326,30 @@ app.MapPost("/campaigns/{id:guid}/retry", async (Guid id, AppDbContext db, Rabbi
     return Results.Accepted(value: new { Message = $"Retrying {failedDeliveries.Count} failed deliveries.", CampaignId = id });
 });
 
-// 7. GET /health - Health check endpoint
+// 7. Internal endpoint for Notification.Worker to trigger real-time progress broadcast
+app.MapPost("/internal/campaigns/{id:guid}/notify-progress", async (Guid id, AppDbContext db, IHubContext<CampaignHub> hubContext) =>
+{
+    var campaignStats = await db.Campaigns
+        .Where(c => c.Id == id)
+        .Select(c => new CampaignDto(
+            c.Id, c.Title, c.Content, c.Channel,
+            c.Status.ToString(), c.CreatedAt,
+            c.Deliveries.Count(d => d.Status == "Pending"),
+            c.Deliveries.Count(d => d.Status == "Sent"),
+            c.Deliveries.Count(d => d.Status == "Failed")
+        ))
+        .FirstOrDefaultAsync();
+
+    if (campaignStats is not null)
+    {
+        await hubContext.Clients.Group(id.ToString()).SendAsync("CampaignProgressUpdated", campaignStats);
+        await hubContext.Clients.All.SendAsync("GlobalProgressUpdated", campaignStats);
+    }
+
+    return Results.Ok();
+});
+
+// 8. GET /health - Health check endpoint
 app.MapGet("/health", async (AppDbContext db, RabbitMqPublisher rabbitPublisher) =>
 {
     bool dbHealthy = false;
